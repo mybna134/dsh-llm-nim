@@ -1,6 +1,40 @@
+# Dependencies and local development files
 node_modules/
 .node_modules-global-link
-*.log
-.DS_Store
+.git/
+.github/
+.claude/
+.codex/
+.vscode/
+.idea/
+
+# Tests, coverage, and obsolete build output
 test/
-*.test.mjs
+tests/
+__tests__/
+*.test.*
+*.spec.*
+coverage/
+.nyc_output/
+lib/
+
+# Package-manager files and local configuration
+pnpm-lock.yaml
+pnpm-workspace.yaml
+package-lock.json
+yarn.lock
+bun.lock
+bun.lockb
+.npmrc
+.env
+.env.*
+
+# Logs, archives, and editor/OS artifacts
+*.log
+*.tgz
+*.tsbuildinfo
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

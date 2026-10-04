@@ -1,4 +1,4 @@
-# dsh-llm-nvidia-completions bundle patch。
+# dsh-llm-nim bundle patch。
 #
 # 以一次 insert 挂载 NVIDIA NIM 适配器插件条目，由 profile 根配置叠加。
 # 该插件在 apply(ctx, config) 中通过 ctx.llm.registerAdapter 注册
@@ -7,4 +7,4 @@
 
 - insert:
     - id: llm-nvidia-completions
-      name: 'dsh-llm-nvidia-completions'
+      name: 'dsh-llm-nim'

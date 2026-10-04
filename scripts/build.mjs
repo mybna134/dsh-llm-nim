@@ -14,6 +14,6 @@ await build({
   entryPoints: ["src/client.ts"], outfile: "dist/client.js",
   platform: "browser", target: "es2022", format: "cjs", bundle: true,
   packages: "external",
-  banner: { js: 'window.__ModuleLoader__.load({ id: "dsh-llm-nvidia-completions", factory: (require) => { var module = { exports: {} }; var exports = module.exports;' },
+  banner: { js: 'window.__ModuleLoader__.load({ id: "dsh-llm-nim", factory: (require) => { var module = { exports: {} }; var exports = module.exports;' },
   footer: { js: "return module.exports; } });" },
 });

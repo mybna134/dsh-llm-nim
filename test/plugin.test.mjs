@@ -27,6 +27,12 @@ async function stream(t, payloads, call = request) {
 
 const delta = (value, finish_reason) => ({ choices: [{ delta: value, finish_reason }] });
 
+test('defaults to an empty catalog and preserves configured models', () => {
+  assert.deepEqual(options.models, []);
+  const models = [{ id: 'example/model', name: 'Example', inputModalities: ['text'] }];
+  assert.deepEqual(resolveAdapterOptions({ models }).models, models);
+});
+
 test('streams reasoning, text and disjoint token usage', async (t) => {
   const { chunks, body } = await stream(t, [
     delta({ reasoning_content: 'think' }), delta({ content: 'answer' }, 'stop'),
@@ -86,7 +92,7 @@ test('client bundle registers with the DSH loader and exposes a settings plugin'
   runInNewContext(await readFile(new URL('../dist/client.js', import.meta.url), 'utf8'), {
     window: { __ModuleLoader__: { load: (definition) => { registered = definition; } } },
   });
-  assert.equal(registered.id, 'dsh-llm-nvidia-completions');
+  assert.equal(registered.id, 'dsh-llm-nim');
   const client = registered.factory(createRequire(import.meta.url));
   assert.equal(typeof client.apply, 'function');
   assert.equal(client.default.apply, client.apply);

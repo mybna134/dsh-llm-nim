@@ -63,7 +63,7 @@ export interface NvidiaConfig {
   maxTokens?: number;
   /** 默认上下文窗口，默认 256000。 */
   defaultContextWindow?: number;
-  /** 模型目录，默认 `moonshotai/kimi-k3`。 */
+  /** 模型目录，默认为空，需按目标端点配置。 */
   models?: NvidiaCatalogModel[];
   /** 流式读取空闲超时（ms），默认 300000。 */
   streamIdleTimeoutMs?: number;
@@ -801,22 +801,14 @@ class NvidiaAdapter extends LlmAdapter {
 // 插件入口。
 // ---------------------------------------------------------------------------
 
-const name = "llm-nvidia-completions";
+const name = "llm-nim";
 const inject = ["llm"];
 
 const NS = settingsNamespace("llm-nvidia-completions");
 const DEFAULT_API_KEY_ENV = "NVIDIA_API_KEY";
 const PROVIDER = "nvidia-completions";
 
-const DEFAULT_MODELS: NvidiaCatalogModel[] = [
-  {
-    id: "moonshotai/kimi-k3",
-    name: "Kimi K3",
-    contextWindow: DEFAULT_CONTEXT_WINDOW,
-    maxTokens: DEFAULT_MAX_TOKENS,
-    inputModalities: ["text", "image"]
-  }
-];
+const DEFAULT_MODELS: NvidiaCatalogModel[] = [];
 
 const catalogModel: z<NvidiaCatalogModel> = z.object({
   id: z.string().required().description("模型 ID（provider 接受的确切标识）"),
