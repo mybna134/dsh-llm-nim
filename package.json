@@ -10,24 +10,26 @@
     "url": "git+https://github.com/mybnn/dsh-nvidia-chat.git"
   },
   "type": "module",
-  "main": "lib/index.js",
-  "types": "lib/types/index.d.ts",
+  "main": "dist/index.js",
+  "types": "dist/types/index.d.ts",
   "exports": {
     ".": {
-      "types": "./lib/types/index.d.ts",
-      "default": "./lib/index.js"
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./client": {
-      "types": "./lib/types/client/index.d.ts",
-      "default": "./lib/client.js"
+      "types": "./dist/types/client.d.ts",
+      "default": "./dist/client.js"
     },
     "./package.json": "./package.json"
   },
   "files": [
-    "lib/index.js",
-    "lib/client.js",
-    "lib/types/**/*.d.ts",
-    "cordis.patch.yml"
+    "dist",
+    "src",
+    "scripts/build.mjs",
+    "tsconfig.json",
+    "cordis.patch.yml",
+    "pnpm-workspace.yaml"
   ],
   "dsh": {
     "bundle": {
@@ -39,22 +41,37 @@
   },
   "license": "MIT",
   "peerDependencies": {
-    "@deepseek-ai/dsh-credentials": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-launch-environment": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-attachment": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-timeout": "^0.1.1-rc.2",
     "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-api-remotes": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-attachment": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-connection": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-locale": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-client-runtime": "^0.1.1-rc.2",
     "@deepseek-ai/dsh-client-ui-settings": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-client-locale": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-api-remotes": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-client-connection": "^0.1.1-rc.2"
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-credentials": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-launch-environment": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-timeout": "^0.1.1-rc.2"
   },
   "dependencies": {
-    "eventsource-parser": "^3.1.0",
+    "@deepseek-ai/dsh-util-values": "^0.1.2-alpha.2",
     "@deepseek-ai/schemastery": "^3.18.1",
-    "@deepseek-ai/dsh-util-values": "^0.1.2-alpha.2"
+    "eventsource-parser": "^3.1.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepare": "pnpm run build",
+    "test": "pnpm run build && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.1-rc.2",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "esbuild": "^0.25.10",
+    "react": "^19.0.0",
+    "typescript": "^5.9.3"
   }
 }

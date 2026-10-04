@@ -1,6 +1,6 @@
 node_modules/
+.node_modules-global-link
 *.log
 .DS_Store
-src/
 test/
 *.test.mjs
