@@ -1,107 +1,200 @@
-# dsh-llm-nvidia-completions
+<div align="center">
+  <h1>DSH NVIDIA NIM</h1>
+  <img src="https://img.shields.io/badge/License-MIT-blue?style=for-the-badge" alt="MIT license">
+  <img src="https://img.shields.io/badge/TypeScript-Strict-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript strict mode">
+  <img src="https://img.shields.io/badge/Node.js-22%2B-5FA04E?style=for-the-badge&logo=nodedotjs&logoColor=white" alt="Node.js 22 or later">
+  <img src="https://img.shields.io/badge/NVIDIA-NIM-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA NIM">
+</div>
 
-为 DeepSeek Harness 的自定义 Provider 协议增加 `nvidia-completions` 协议，对接 NVIDIA NIM 的 OpenAI 兼容 chat-completions 端点（`https://integrate.api.nvidia.com/v1/chat/completions`），从而支持 `moonshotai/kimi-k3` 等模型。
+`dsh-llm-nvidia-completions` 为 DeepSeek Harness（DSH）增加 `nvidia-completions` Provider 协议，通过 NVIDIA NIM 的 OpenAI 兼容 `/chat/completions` 接口使用模型。插件默认提供 `moonshotai/kimi-k3` 模型目录，并附带 Web 设置页。
 
-## 特性
+## 功能
 
-- 注册 `nvidia-completions` provider 路由
-- fetch + SSE 流式调用（对齐 `@deepseek-ai/dsh-llm-deepseek` 的传输实现）
-- 支持 `reasoning_effort`（`off`/`low`/`high`/`max`），并把 wire 上的 `reasoning_content` 翻译为 harness 的 `reasoning` 内容块
-- 支持视觉输入（`image_url`，base64 data URL inline，无需 Files API）
-- 支持工具调用（`tool_calls` 增量）
-- 可由 harness 采样参数驱动的 `temperature`（默认 1）与固定 `seed`（默认 0），对齐 NVIDIA 示例
-- 可配置的模型目录、上下文窗口、输出上限、采样温度、random seed 与空闲超时
-- 自带 Web 设置页（`dsh.client` bundle）：在 Settings 面板注册「Nvidia NIM」页，可视化配置 provider 与模型目录
-- 上游未发送 `[DONE]` 就断流时，按已收到的 `finish_reason`（或已产出的内容）收尾定型，不丢弃已收到的内容；仅在完全没有终止信息时才失败，且该失败默认可重试
+### 流式对话与推理
 
-## 配置
+- 使用 `fetch` 和 SSE 接收流式响应。
+- 将上游 `reasoning_content` 转换为 DSH 的推理内容块。
+- 支持 `off`、`low`、`high`、`max` 四种推理强度。
+- 支持配置采样温度、`top_p`、随机种子、输出上限和流式空闲超时。
+- 转换上游返回的 Token 用量，包括缓存读取和推理 Token。
 
-本插件在 Web 设置面板（Settings）注册一个独立的「**Nvidia NIM**」设置页，可图形化配置下列内容（写入 `llm-nvidia-completions:` settings 段，API key 走 credentials）：
+### 图片与工具调用
 
-- **Provider**：API key（`NVIDIA_API_KEY`）、`baseURL`、默认推理强度、默认采样温度、默认 `top_p`、随机种子、单次输出上限、默认上下文窗口
-- **模型目录**：增删改模型，每项含 `id`/显示名称/描述/上下文窗口/最大输出 token/`topP`/输入模态（text、image）
+- 从 DSH 附件服务读取图片，以 base64 data URL 形式发送 `image_url`。
+- 拼接增量 `tool_calls`，并将工具结果序列化为独立的 `tool` 消息。
+- 恢复响应正文中的 `<invoke>` 格式工具调用。
 
-模型页面（Settings → Models）也会自动出现 `nvidia-completions` provider。也可以用环境变量：
+### Web 设置与模型目录
 
-| 环境变量 | 说明 | 默认值 |
-|---|---|---|
-| `NVIDIA_API_KEY` | NVIDIA NIM API 密钥 | — |
-| `NVIDIA_BASE_URL` | 覆盖端点 | `https://integrate.api.nvidia.com/v1` |
+- 在 Settings 中注册独立的 **Nvidia NIM** 设置页，提供中文和英文界面。
+- API 密钥通过 DSH credentials 服务保存。
+- 支持增删改模型，配置显示名称、描述、上下文窗口、输出上限、`top_p` 和输入模态。
+- 在 Settings → Models 中注册 `nvidia-completions` Provider。
 
-settings 命名空间 `llm-nvidia-completions` 下的可配置项：
+### 断流处理
 
-| 配置项 | 说明 | 默认值 |
-|---|---|---|
-| `baseURL` | 接口 base URL | `https://integrate.api.nvidia.com/v1` |
-| `defaultReasoningEffort` | 默认推理强度 | `max` |
-| `defaultTemperature` | 默认采样温度 | `1` |
-| `defaultTopP` | 默认核采样 top_p | `1` |
-| `seed` | 固定随机种子 | `0` |
-| `maxTokens` | 单次输出上限 | `16384` |
-| `defaultContextWindow` | 默认上下文窗口 | `256000` |
-| `models` | 模型目录（每个模型含 `id`/`name`/`contextWindow`/`maxTokens`/`topP`/`inputModalities` 等） | `moonshotai/kimi-k3` |
-| `retryPolicy` | 重试策略（`mode`/`maxRetries`/`retryableCodes`/`backoff`，沿用 harness 的 `RetryPolicySchema`） | `normal` 模式重试 5 次，错误码见下 |
+- 上游未发送 `[DONE]` 时，根据 `finish_reason` 或已接收的内容完成收尾。
+- 保留已收到的文本和推理内容；没有结束信息且没有内容时抛出可重试错误。
+- 将认证、限流、服务端错误和超时等情况转换为 DSH 错误码。
 
-### 断流收尾
+## 快速上手
 
-NVIDIA NIM 在超长流（例如长时间 `reasoning_content`）上偶尔会在**未发送 `[DONE]`** 的情况下关闭连接。适配器据此收尾：
+### 准备
 
-- 已收到 `finish_reason` → 以上游给出的原因为准正常收尾（等同 `[DONE]`）。
-- 未收到 `finish_reason` 但**已有内容**（`text` / `reasoning` / `tool-call`，含待定型的 `<invoke>` 候选）→ 按截断定型为 `max-tokens`，harness 会据此丢弃可能不完整的工具调用并优雅结束该轮。
-- **完全没有终止信息**（既无 `finish_reason`，也无任何内容）→ 抛出 `STREAM_CLOSED`。
+- 已安装 DeepSeek Harness，并有可用的 profile。
+- 已取得目标 NVIDIA NIM 端点的 API 密钥。
+- 从源码构建时使用 Node.js 22 或更高版本，以及 pnpm。
+- 模型 ID、支持的输入模态和采样参数应与实际端点一致。
 
-未显式配置 `retryPolicy` 时，默认可重试错误码为 harness 默认集（`EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT`）**加上 `STREAM_CLOSED`**，因此这类断流会自动重试，而不会让整轮静默结束。
+### 安装插件
 
-## 安装
+在你的 DSH profile 目录运行：
 
-本包通过 `dsh.bundle`（package.json 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`）声明为一个 profile 层，`dsh plugin add` 会自动识别并加入 `dsh.profile.bundles`。
-
-```bash
-cd <你的 profile 目录>
+```sh
 dsh plugin add dsh-llm-nvidia-completions
-# 或本地开发（file: 指向本插件 checkout）
-dsh plugin add file:/home/mybna134/Projects/dsh-nvidia-chat
 ```
 
-安装后重启 `dsh web` / 对应 surface，模型选择器会出现 `Nvidia NIM` provider + `Kimi K3`，自定义 Provider 协议里也会多出 `nvidia-completions`。
+插件通过 `package.json` 中的 `dsh.bundle.patch` 声明 profile 配置层。DSH 会读取 `cordis.patch.yml`，将插件加入 profile 的 bundles。
 
-> 注意：若安装时仍提示 `declares no dsh.bundle`，说明 `package.json` 缺少
-> `"dsh": { "bundle": { "patch": "./cordis.patch.yml" } }` 声明——本仓库已包含，此提示不会再出现。
+本地源码安装方式见下方“构建”。
 
-## TypeScript 开发与 pnpm 安装
+### 配置并使用
 
-服务端适配器位于 `src/index.ts`，Web 设置页位于 `src/client.ts`；`dist/` 是构建产物，请修改 `src/` 后重新构建。
+1. 安装后重启 `dsh web` 或正在使用的 DSH surface。
+2. 打开 Settings → **Nvidia NIM**，填写 API 密钥并保存。
+3. 按需调整端点和模型目录。默认端点为 `https://integrate.api.nvidia.com/v1`。
+4. 在模型选择器中选择 **Nvidia NIM → Kimi K3**，开始对话。
 
-```bash
+也可以在启动 DSH 前通过环境变量提供密钥：
+
+```sh
+export NVIDIA_API_KEY='你的 NVIDIA NIM API 密钥'
+dsh web
+```
+
+## 构建
+
+在仓库根目录运行：
+
+```sh
 pnpm install
 pnpm typecheck
 pnpm test
 ```
 
-`prepare` 执行 `pnpm run build`：先用 TypeScript 严格检查并生成 `dist/types/*.d.ts`，再构建服务端 ESM 入口 `dist/index.js` 和保持 DSH 模块加载器格式的客户端 `dist/client.js`。也可手动运行 `pnpm run prepare`。`pnpm-workspace.yaml` 明确允许构建依赖 `esbuild` 执行安装脚本，支持新版 pnpm 的构建许可机制。
+`pnpm install` 的 `prepare` 生命周期会自动构建。修改源码后手动运行：
 
-在其他项目中安装本地插件：
-
-```bash
-pnpm add file:/home/mybna134/Projects/dsh-nvidia-chat
+```sh
+pnpm build
 ```
 
-本地 `file:` 安装前先在插件目录执行 `pnpm install`，以生成构建产物。包内包含运行产物、TypeScript 源码与构建脚本；`pnpm pack` 会执行 `prepare`。Git 安装也具备所需构建文件：
+构建先执行 TypeScript 严格检查并生成声明文件，再生成服务端 ESM 入口和符合 DSH 模块加载器格式的 Web 客户端入口。
 
-```bash
-pnpm add git+https://github.com/mybnn/dsh-nvidia-chat.git
+| 路径 | 用途 |
+| --- | --- |
+| `src/index.ts` | 服务端适配器、模型目录和配置注册 |
+| `src/client.ts` | Web 设置页及中英文文案 |
+| `scripts/build.mjs` | TypeScript 检查和 esbuild 构建 |
+| `dist/index.js` | 服务端构建产物 |
+| `dist/client.js` | Web 客户端构建产物 |
+| `dist/types/` | TypeScript 声明文件 |
+| `test/plugin.test.mjs` | 流式响应、工具调用和客户端注册测试 |
+| `cordis.patch.yml` | DSH profile bundle 配置 |
+
+### 安装本地构建
+
+先在插件目录完成 `pnpm install`，再切换到 DSH profile 目录运行：
+
+```sh
+dsh plugin add file:/绝对路径/dsh-nvidia-chat
 ```
 
-如果安装环境禁用了生命周期脚本，请在插件目录手动执行 `pnpm run prepare`。pnpm 的重复安装优化可能跳过未变更项目的生命周期脚本；修改源码后请运行 `pnpm run build`。
+若通过 pnpm 添加本地依赖：
 
-## 模型
+```sh
+pnpm add file:/绝对路径/dsh-nvidia-chat
+```
 
-默认目录：
+发布包包含构建产物、源码和构建所需文件；`pnpm pack` 会执行 `prepare`。如果安装环境禁用了生命周期脚本，请在插件目录手动运行 `pnpm run prepare`。`pnpm-workspace.yaml` 已允许 esbuild 执行安装脚本。
 
-| 模型 | 上下文 | 能力 |
-|---|---|---|
-| `moonshotai/kimi-k3` | 256000 | text + image |
+## 使用
+
+### Web 设置
+
+Settings → **Nvidia NIM** 提供以下配置：
+
+- **Provider**：API 密钥、接口地址、默认推理强度、采样温度、`top_p`、随机种子、输出上限和上下文窗口。
+- **模型目录**：模型 ID、显示名称、描述、上下文窗口、输出上限、`top_p` 和 text / image 输入模态。
+
+API 密钥以 `NVIDIA_API_KEY` 凭证保存，输入框留空会保留现有密钥。其他配置写入 `llm-nvidia-completions` settings 命名空间。
+
+### 环境变量
+
+| 环境变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `NVIDIA_API_KEY` | NVIDIA NIM API 密钥 | 无 |
+| `NVIDIA_BASE_URL` | 未设置 `baseURL` 时使用的接口地址 | `https://integrate.api.nvidia.com/v1` |
+
+接口地址按 settings 的 `baseURL` → 启动环境的 `NVIDIA_BASE_URL` → 默认端点的顺序解析。地址应包含 `/v1` 等 API 前缀；插件会追加 `/chat/completions`。
+
+密钥通过 credentials 服务解析；没有该服务时，从 DSH 启动环境读取。修改环境变量后应重新启动 DSH。
+
+### 配置项
+
+以下字段属于 `llm-nvidia-completions` settings 命名空间。空闲超时、重试策略和自定义凭证引用可通过该命名空间配置。
+
+| 配置项 | 说明 | 默认值 |
+| --- | --- | --- |
+| `apiKeyEnv` | API 密钥凭证引用 | `NVIDIA_API_KEY` |
+| `baseURL` | 接口 base URL，优先于环境变量 | 未设置时按上述顺序解析 |
+| `defaultReasoningEffort` | 默认推理强度：`off` / `low` / `high` / `max` | `max` |
+| `defaultTemperature` | 默认采样温度，范围 `0–2` | `1` |
+| `defaultTopP` | 默认核采样值，范围 `0–1` | `1` |
+| `seed` | 非负整数随机种子 | `0` |
+| `maxTokens` | 默认最大输出 Token 数 | `16384` |
+| `defaultContextWindow` | 默认上下文窗口，单位 Token | `256000` |
+| `models` | 模型目录 | 见下表 |
+| `streamIdleTimeoutMs` | 流式读取空闲超时，单位毫秒 | `300000`（5 分钟） |
+| `retryPolicy` | DSH 重试策略，支持 `mode`、`maxRetries`、`retryableCodes`、`backoff` | `normal` 模式，默认重试 5 次 |
+
+### 模型目录
+
+插件内置以下目录项：
+
+| 模型 ID | 显示名称 | 上下文窗口 | 最大输出 Token | 输入模态 |
+| --- | --- | --- | --- | --- |
+| `moonshotai/kimi-k3` | Kimi K3 | `256000` | `16384` | text、image |
+
+这些数值是插件的默认目录配置；实际可用模型及限制取决于目标端点。
+
+每个模型必须提供唯一的 `id`，其他字段可选。未指定 `contextWindow`、`maxTokens` 或 `topP` 时继承 Provider 默认值；未指定 `inputModalities` 时按仅支持文本处理。
+
+## 细节
+
+### 请求参数
+
+- DSH 显式指定的推理强度和采样温度优先于插件默认值。
+- 推理强度为 `off` 时，请求中省略 `reasoning_effort`。
+- `top_p` 优先使用模型目录项的 `topP`，否则使用 `defaultTopP`。
+- 模型目录的 `maxTokens` 向 DSH 提供默认输出上限，请求中的 `max_tokens` 使用 DSH 传入的值。
+- 固定 `seed` 默认发送为 `0`。
+
+### 图片输入
+
+图片输入需要 DSH 的持久化附件服务，且模型目录须声明 `image` 输入模态。插件通过附件服务准备请求图片，策略上限为 4,194,304 像素和 1,048,576 字节，再以内联 `image_url` 发送。
+
+### 断流收尾与重试
+
+当 SSE 连接在发送 `[DONE]` 前关闭时：
+
+| 已接收的信息 | 处理方式 |
+| --- | --- |
+| 有 `finish_reason` | 按上游结束原因正常收尾 |
+| 无 `finish_reason`，但已有文本、推理或工具调用内容 | 保留内容，以 `max-tokens` 截断原因收尾，让 DSH 处理可能不完整的工具调用 |
+| 无 `finish_reason`，也没有任何内容 | 抛出 `STREAM_CLOSED` |
+
+未显式配置 `retryPolicy` 时，默认可重试错误码为 `EMPTY_RESPONSE`、`RATE_LIMIT`、`SERVER`、`TIMEOUT`、`TRANSPORT` 和 `STREAM_CLOSED`。显式配置重试策略后，使用 DSH 对该策略的解析结果。
 
 ## 许可
 
-MIT
+MIT，见 `package.json` 中的 `license` 声明。
