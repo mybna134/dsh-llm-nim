@@ -286,9 +286,7 @@ function ModelsEditor(props: ModelsProps) {
       ] }),
       jsx("button", { type: "button", style: buttonStyle, disabled, onClick: add, children: t("addModel") })
     ] }),
-    models.length === 0
-      ? jsx("p", { style: { color: "var(--dsw-alias-label-tertiary)", fontSize: 12, margin: 0 }, children: t("modelsHint") })
-      : models.map((model, index) => {
+    models.map((model, index) => {
           const id = typeof model.id === "string" ? model.id : "";
           const name = typeof model.name === "string" ? model.name : "";
           const description = typeof model.description === "string" ? model.description : "";
