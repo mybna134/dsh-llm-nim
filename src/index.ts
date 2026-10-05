@@ -1,8 +1,9 @@
-import type { GenerateOptions, ContentBlock, ImageBlock, Message, StreamChunk, FinishReason, TokenUsage, LlmResolvedModelInfo, LlmModelInfo } from "@deepseek-ai/dsh-llm";
+import type { GenerateOptions, ContentBlock, ImageBlock, RequestMessage, StreamChunk, FinishReason, TokenUsage, LlmResolvedModelInfo, LlmModelInfo } from "@deepseek-ai/dsh-llm";
 import type { AttachmentStore, ImageAttachmentRef, RequestImageAttachment } from "@deepseek-ai/dsh-attachment";
 import type { LaunchEnvironmentSnapshot } from "@deepseek-ai/dsh-launch-environment";
-import type { Context } from "@deepseek-ai/cordis";
-import { settingsNamespace, type SettingsProvider } from "@deepseek-ai/dsh-settings";
+import type { Context, Volatile } from "@deepseek-ai/cordis";
+import type {} from "@deepseek-ai/dsh-settings";
+import type {} from "@deepseek-ai/cordis-plugin-loader";
 import z from "@deepseek-ai/schemastery";
 import * as Llm from "@deepseek-ai/dsh-llm";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
@@ -24,15 +25,10 @@ const {
   contentHasImage,
   isContextWindowExceededError,
   isQuotaExceededError,
-  resolveRetryPolicy
+  resolveRetryPolicy,
+  ToolCallId,
+  projectToolUpdates
 } = Llm;
-// ToolCallId replaced CallId in newer hosts; retain compatibility with both.
-type ToolCallIdFactory = (value: string) => Llm.ToolCallBlock["id"];
-const llmIds = Llm as typeof Llm & { ToolCallId?: ToolCallIdFactory; CallId?: ToolCallIdFactory };
-const ToolCallId: ToolCallIdFactory = llmIds.ToolCallId ?? llmIds.CallId ?? (() => {
-  throw new Error("DSH LLM does not expose a tool call ID factory");
-});
-
 /** 单个模型目录条目。 */
 export interface NvidiaCatalogModel {
   id: string;
@@ -84,7 +80,7 @@ export interface NvidiaAdapterServices {
 }
 interface WireContent { type: "text" | "image_url"; text?: string; image_url?: { url: string } }
 interface WireMessage {
-  role: "system" | "assistant" | "user" | "tool";
+  role: "system" | "developer" | "assistant" | "user" | "tool";
   content: string | WireContent[] | null;
   reasoning_content?: string;
   tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
@@ -125,14 +121,24 @@ function flattenText(blocks: readonly ContentBlock[]) {
   return blocks.filter((block) => block.type === "text").map((block) => block.text).join("");
 }
 
-/** 请求图片的像素 / 编码字节上限（与内置 pi-ai 适配器的缺省值一致）。 */
-const REQUEST_IMAGE_POLICY = { maxPixels: 4194304, maxBytes: 1048576 };
+/** 请求图片最多保留 4194304 像素，编码目标为 1 MiB，保持源图比例。 */
+const REQUEST_IMAGE_MAX_PIXELS = 4194304;
+const REQUEST_IMAGE_MAX_BYTES = 1048576;
+
+function requestImageTarget(ref: ImageAttachmentRef) {
+  const scale = Math.min(1, Math.sqrt(REQUEST_IMAGE_MAX_PIXELS / (ref.width * ref.height)));
+  return {
+    width: Math.max(1, Math.floor(ref.width * scale)),
+    height: Math.max(1, Math.floor(ref.height * scale)),
+    maxBytes: REQUEST_IMAGE_MAX_BYTES
+  };
+}
 
 /**
  * 通过 attachments 服务取出本次请求会发送的图片（仅 user 正文里的 image 块）。
  * image 块只携带持久化引用，`attachment.bytes` 是字节数而非图片数据。
  */
-async function prepareRequestImages(messages: readonly Message[], attachments: AttachmentStore | undefined, signal: AbortSignal): Promise<RequestImages> {
+async function prepareRequestImages(messages: readonly RequestMessage[], attachments: AttachmentStore | undefined, signal: AbortSignal): Promise<RequestImages> {
   const refs = new Map<ImageAttachmentRef["attachmentId"], ImageAttachmentRef>();
   for (const message of messages) {
     if (message.role !== "user") continue;
@@ -143,7 +149,7 @@ async function prepareRequestImages(messages: readonly Message[], attachments: A
   if (refs.size === 0) return new Map();
   if (attachments === undefined) throw new LlmError("NVIDIA image input requires the durable attachment service", "UNSUPPORTED_CONTENT");
   const ordered = [...refs.values()];
-  const prepared = await Promise.all(ordered.map((ref) => attachments.readImageRequest(ref, REQUEST_IMAGE_POLICY, signal)));
+  const prepared = await Promise.all(ordered.map((ref) => attachments.readImageRequest(ref, requestImageTarget(ref), signal)));
   return new Map(ordered.map((ref, index) => [ref.attachmentId, prepared[index]]));
 }
 
@@ -159,9 +165,12 @@ function inlineImageUrl(block: ImageBlock, requestImages: RequestImages) {
 }
 
 /** 把一条 harness 消息翻译成 wire 消息（支持 text / image / reasoning / tool-call / tool-result）。 */
-function serializeMessage(message: Message, requestImages: RequestImages): WireMessage {
-  if (message.role === "system") {
-    return { role: "system", content: flattenText(message.content) };
+function serializeMessage(message: RequestMessage, requestImages: RequestImages): WireMessage {
+  if (message.role === "system" || message.role === "developer") {
+    return { role: message.role, content: flattenText(message.content) };
+  }
+  if (message.role === "tool") {
+    return { role: "tool", tool_call_id: message.toolCallId, content: flattenText(message.content) || "(no output)" };
   }
   if (message.role === "assistant") {
     const text = flattenText(message.content);
@@ -184,17 +193,13 @@ function serializeMessage(message: Message, requestImages: RequestImages): WireM
     };
   }
 
-  // user 角色：文本 + 图片 + 嵌套工具结果。
+  // user 角色：文本 + 图片。
   const content: WireContent[] = [];
   for (const block of message.content) {
     if (block.type === "text") {
       if (block.text.length > 0) content.push({ type: "text", text: block.text });
     } else if (block.type === "image") {
       content.push({ type: "image_url", image_url: { url: inlineImageUrl(block, requestImages) } });
-    } else if (block.type === "tool-result") {
-      // 工具结果：文本部分合并进 tool 消息的 content。
-      const resultText = flattenText(block.content);
-      content.push({ type: "text", text: resultText || "(no output)" });
     }
   }
   if (content.length === 0) content.push({ type: "text", text: "" });
@@ -205,41 +210,14 @@ function serializeMessage(message: Message, requestImages: RequestImages): WireM
   return { role: "user", content };
 }
 
-/**
- * 工具结果是单独的一条 `{role:"tool"}` wire 消息，而不是塞进 user content。
- * harness 把每个工具结果放进各自的 user-role 消息，因此这里按块展开。
- */
-function serializeMessages(messages: readonly Message[], requestImages: RequestImages): WireMessage[] {
-  const wire: WireMessage[] = [];
-  for (const message of messages) {
-    if (message.role === "system" || message.role === "assistant") {
-      wire.push(serializeMessage(message, requestImages));
-      continue;
-    }
-    // user 消息：先输出正文（文本/图片），再为每个 tool-result 输出独立 tool 消息。
-    const regular = message.content.filter((block) => block.type !== "tool-result");
-    const toolResults = message.content.filter((block) => block.type === "tool-result");
-    if (regular.length > 0 || toolResults.length === 0) {
-      wire.push(serializeMessage({ ...message, content: regular }, requestImages));
-    }
-    for (const result of toolResults) {
-      wire.push({
-        role: "tool",
-        tool_call_id: result.toolCallId,
-        content: flattenText(result.content) || "(no output)"
-      });
-    }
-  }
-  return wire;
-}
-
 /** 组装完整 wire 请求体（始终流式，可配置 usage）。 */
 function serializeRequest(options: GenerateOptions, config: NvidiaAdapterOptions, requestImages: RequestImages) {
   const messages: WireMessage[] = [];
   if (options.system !== undefined) messages.push({ role: "system", content: options.system });
-  messages.push(...serializeMessages(options.messages, requestImages));
+  const projected = projectToolUpdates(options.messages, options.tools, undefined, options.toolHistory);
+  messages.push(...projected.messages.map((message) => serializeMessage(message, requestImages)));
 
-  const tools = options.tools?.map((tool) => ({
+  const tools = projected.tools?.map((tool) => ({
     type: "function" as const,
     function: {
       name: tool.name,
@@ -638,8 +616,7 @@ class NvidiaAdapter extends LlmAdapter {
     return this.config.options().retryPolicy;
   }
 
-  // 宿主 dsh-llm ≥0.1.5 的 token meter（/compact 等）会同步调用此方法，而本插件解析到的
-  // 旧版 LlmAdapter 基类没有它；显式声明无图片计价，让 token meter 回落到中性估算。
+  // 未声明 provider 专属图片计价，token meter 使用中性估算。
   imageRequestPricing(_provider: string, _model: string) {
     return undefined;
   }
@@ -660,8 +637,7 @@ class NvidiaAdapter extends LlmAdapter {
     return Promise.resolve(this.modelInfoFor(provider, model));
   }
 
-  modelInfoFor(provider: string, model: string): LlmResolvedModelInfo {
-    const options = this.config.options();
+  modelInfoFor(provider: string, model: string, options = this.config.options()): LlmResolvedModelInfo {
     const configured = options.models.find((entry) => entry.id === model);
     const inputModalities = configured?.inputModalities ?? ["text"];
     return {
@@ -692,7 +668,7 @@ class NvidiaAdapter extends LlmAdapter {
   prepareCall(provider: string, model: string, _signal?: AbortSignal) {
     const options = this.config.options();
     return Promise.resolve({
-      model: this.modelInfoFor(provider, model),
+      model: this.modelInfoFor(provider, model, options),
       stream: (callOptions: GenerateOptions) => this.streamWithOptions(callOptions, options)
     });
   }
@@ -702,6 +678,7 @@ class NvidiaAdapter extends LlmAdapter {
   }
 
   async *streamWithOptions(options: GenerateOptions, connection: NvidiaAdapterOptions): AsyncGenerator<StreamChunk, void, unknown> {
+    options = { ...options, messages: [...Llm.projectOffloadedImages(options.messages, (ref) => Llm.offloadedImageText(ref))] };
     const hasImages = options.messages.some((message) => contentHasImage(message.content));
     if (hasImages) {
       const model = connection.models.find((entry) => entry.id === options.model);
@@ -804,7 +781,7 @@ class NvidiaAdapter extends LlmAdapter {
 const name = "llm-nim";
 const inject = ["llm"];
 
-const NS = settingsNamespace("llm-nvidia-completions");
+const SETTINGS_ENTRY_ID = "llm-nvidia-completions";
 const DEFAULT_API_KEY_ENV = "NVIDIA_API_KEY";
 const PROVIDER = "nvidia-completions";
 
@@ -820,18 +797,20 @@ const catalogModel: z<NvidiaCatalogModel> = z.object({
   inputModalities: z.array(z.union(["text", "image"])).min(1).default(["text"]).description("支持的输入模态")
 });
 
-const Config: z<NvidiaConfig> = z.object({
-  apiKeyEnv: z.string().role("credential-ref").default(DEFAULT_API_KEY_ENV).description("承载 API 密钥的环境变量"),
-  baseURL: z.string().description("接口 base URL"),
-  defaultReasoningEffort: z.union(["off", "low", "high", "max"]).default("max").description("默认推理强度"),
-  defaultTemperature: z.number().min(0).max(2).default(DEFAULT_TEMPERATURE).description("默认采样温度 temperature（0~2）"),
-  defaultTopP: z.number().min(0).max(1).default(DEFAULT_TOP_P).description("默认核采样 top_p（0~1）"),
-  seed: z.number().step(1).min(0).default(DEFAULT_SEED).description("固定随机种子"),
-  maxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS).description("单次输出上限 maxTokens（token）"),
-  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).description("默认上下文窗口（token）"),
-  models: z.array(catalogModel).default(DEFAULT_MODELS).description("模型目录"),
-  streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS).description("流式读取空闲超时（ms）"),
-  retryPolicy: RetryPolicySchema
+export type NvidiaLiveConfig = { [K in keyof Required<NvidiaConfig>]: Volatile<NvidiaConfig[K]> };
+
+const Config = z.object({
+  apiKeyEnv: z.string().role("credential-ref").default(DEFAULT_API_KEY_ENV).description("承载 API 密钥的环境变量").volatile(),
+  baseURL: z.string().description("接口 base URL").volatile(),
+  defaultReasoningEffort: z.union(["off", "low", "high", "max"]).default("max").description("默认推理强度").volatile(),
+  defaultTemperature: z.number().min(0).max(2).default(DEFAULT_TEMPERATURE).description("默认采样温度 temperature（0~2）").volatile(),
+  defaultTopP: z.number().min(0).max(1).default(DEFAULT_TOP_P).description("默认核采样 top_p（0~1）").volatile(),
+  seed: z.number().step(1).min(0).default(DEFAULT_SEED).description("固定随机种子").volatile(),
+  maxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS).description("单次输出上限 maxTokens（token）").volatile(),
+  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).description("默认上下文窗口（token）").volatile(),
+  models: z.array(catalogModel).default(DEFAULT_MODELS).description("模型目录").volatile(),
+  streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS).description("流式读取空闲超时（ms）").volatile(),
+  retryPolicy: RetryPolicySchema.volatile()
 });
 
 const BASE_URL_ENV = "NVIDIA_BASE_URL";
@@ -889,14 +868,18 @@ function resolveAdapterOptions(config: NvidiaConfig, environment?: LaunchEnviron
   };
 }
 
-function apply(ctx: Context, config: NvidiaConfig) {
-  let current = () => config;
+/** Read a detached snapshot of the Loader's live fields. */
+export function plainOptions(config: NvidiaLiveConfig): NvidiaConfig {
+  return structuredClone(Object.fromEntries(Object.entries(config).map(([key, ref]) => [key, ref.get()]))) as NvidiaConfig;
+}
+
+function apply(ctx: Context, config: NvidiaLiveConfig) {
   let lastRaw: NvidiaConfig | undefined;
   let lastGood: NvidiaAdapterOptions | undefined;
 
   const options = () => {
-    const raw = current();
-    if (raw === lastRaw && lastGood !== undefined) return lastGood;
+    const raw = plainOptions(config);
+    if (lastGood !== undefined && deepEqualJson(raw, lastRaw)) return lastGood;
     try {
       const next = resolveAdapterOptions(raw, launchEnvironmentOf(ctx));
       lastRaw = raw;
@@ -931,7 +914,7 @@ function apply(ctx: Context, config: NvidiaConfig) {
     {
       provider: PROVIDER,
       displayName: "Nvidia NIM",
-      settingsNs: NS,
+      settingsNs: ctx.fiber.entry?.options.id ?? SETTINGS_ENTRY_ID,
       settingsPath: []
     }
   ]);
@@ -945,28 +928,9 @@ function apply(ctx: Context, config: NvidiaConfig) {
     registeredPolicy = policy;
   };
 
+  ctx.on("loader/volatile-update", ensureRegistrationFacts);
   ctx.inject(["settings"], (settingsCtx: Context) => {
-    const hooks = {
-      setSource: (source: () => NvidiaConfig) => {
-        current = source;
-      },
-      onChange: ensureRegistrationFacts
-    };
-    const settings = settingsCtx.settings as SettingsProvider & {
-      installSection?: (ctx: Context, ns: typeof NS, schema: z<NvidiaConfig>, base: NvidiaConfig, sectionHooks: typeof hooks) => void;
-    };
-    if (typeof settings.installSection === "function") {
-      settings.installSection(ctx, NS, Config, config, hooks);
-      return;
-    }
-
-    // Compatibility with the pre-0.1.5 SettingsProvider. The current API
-    // owns this optional-consumer wiring through installSection(); older
-    // providers expose the underlying register/watch primitives instead.
-    const scope = settingsCtx.settings.register(NS, Config, { base: config });
-    hooks.setSource(() => scope.get());
-    hooks.onChange();
-    scope.watch(() => hooks.onChange());
+    settingsCtx.effect(() => settingsCtx.settings.configure({ auto: false }, ctx.fiber));
   });
 }
 

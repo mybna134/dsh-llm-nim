@@ -1,6 +1,6 @@
-import type { SettingsScope } from "@deepseek-ai/dsh-client-runtime/client";
+import type { ConfigForm } from "@deepseek-ai/dsh-client-ui-settings/client";
 
-import type {} from "@deepseek-ai/dsh-client-ui-settings/client";
+import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
 import type {} from "@deepseek-ai/dsh-client-locale/client";
 import * as React from "react";
 import { jsx, jsxs } from "react/jsx-runtime";
@@ -25,15 +25,14 @@ interface ModelsProps {
 interface CredentialState { configured?: boolean }
 type RemoteResult<T> = { ok: true; value: T } | { ok: false; error: { message: string } };
 type CredentialResponse<T> = RemoteResult<T> | { result: RemoteResult<T> };
-// Older DSH packages omit the generated credentials contribution from their
-// client declarations. Keep its positional Remote contract at this boundary.
+// Credentials retain their positional Remote contract in DSH 0.2.0.
 interface CredentialsRemote {
   credentials: {
     describe(refs: string[]): Promise<CredentialResponse<Record<string, CredentialState>>>;
     set(ref: string, value: string): Promise<CredentialResponse<void>>;
   };
 }
-interface SettingsProps { scope: SettingsScope<NvidiaConfig>; api: CredentialsRemote; t: Translate }
+interface SettingsProps { scope: ConfigForm<NvidiaConfig>; api: CredentialsRemote; t: Translate }
 
 declare module "@deepseek-ai/dsh-client-ui-slots" {
   interface LocaleNamespaceMap { "settings.nvidia": keyof typeof en }
@@ -133,15 +132,13 @@ const zh = {
 };
 
 // -------------------------------------------------------------------------
-// scope 响应式 hook：跳过需要模板的最小化 subscribe。
+// config form 响应式 hook。
 // -------------------------------------------------------------------------
-function useScopeSnapshot(scope: SettingsScope<NvidiaConfig>) {
-  const [snapshot, setSnapshot] = React.useState(() => scope.getSnapshot());
-  React.useEffect(() => {
-    setSnapshot(scope.getSnapshot());
-    return scope.subscribe(() => setSnapshot(scope.getSnapshot()));
-  }, [scope]);
-  return snapshot;
+function useScopeSnapshot(scope: ConfigForm<NvidiaConfig>) {
+  return React.useSyncExternalStore(
+    React.useCallback((listener: () => void) => scope.subscribe(listener), [scope]),
+    React.useCallback(() => scope.getSnapshot(), [scope])
+  );
 }
 
 // -------------------------------------------------------------------------
@@ -479,8 +476,11 @@ function NvidiaSettingsSection(props: SettingsProps) {
         setNotice(undefined);
         try {
           const dval = draft.value || {};
-          const sends: Promise<unknown>[] = [];
-          const setField = <K extends keyof NvidiaConfig>(k: K, v: NvidiaConfig[K]) => { if (v === undefined || v === "") sends.push(scope.unset(k)); else sends.push(scope.set(k, v)); };
+          const ops: Parameters<ConfigForm<NvidiaConfig>["mutate"]>[0][number][] = [];
+          const setField = <K extends keyof NvidiaConfig>(k: K, v: NvidiaConfig[K]) => {
+            if (v === undefined || v === "") ops.push({ op: "unset", path: [k] });
+            else ops.push({ op: "set", path: [k], value: JSON.parse(JSON.stringify(v)) });
+          };
           setField("baseURL", dval.baseURL);
           setField("defaultReasoningEffort", dval.defaultReasoningEffort);
           setField("defaultTemperature", dval.defaultTemperature);
@@ -494,7 +494,7 @@ function NvidiaSettingsSection(props: SettingsProps) {
             const result = "result" in stored ? stored.result : stored;
             if (!result?.ok) throw new Error(result?.error?.message || "credential rejected");
           }
-          await Promise.all(sends);
+          if (!await scope.mutate(ops, draft.revision)) throw new Error("settings rejected");
           setKeyDraft("");
           setNotice("saved");
         } catch (e) {
@@ -510,7 +510,7 @@ function NvidiaSettingsSection(props: SettingsProps) {
 // -------------------------------------------------------------------------
 // cordis 插件体
 // -------------------------------------------------------------------------
-const inject = ["slots", "locale", "remote", "remote.credentials", "settingsScope"];
+const inject = ["slots", "locale", "remote", "remote.credentials", "configForms"];
 
 function apply(ctx: Context) {
   const t = ctx.locale.bind(NS);
@@ -522,7 +522,7 @@ function apply(ctx: Context) {
 
   const remote = ctx.get("remote") as CredentialsRemote | undefined;
   if (remote === undefined) throw new Error("Nvidia settings require the remote service");
-  const scope = ctx.settingsScope.bind<NvidiaConfig>({ namespace: SETTINGS_NS });
+  const scope = ctx.configForms.get<NvidiaConfig>(SETTINGS_NS);
 
   const injected = () => ({ scope, api: remote, t });
 
