@@ -13,7 +13,6 @@ import { MAX_TIMER_DELAY_MS } from "@deepseek-ai/dsh-timeout";
 import { EventSourceParserStream } from "eventsource-parser/stream";
 
 const {
-  CONTEXT_WINDOW_EXCEEDED_CODE,
   EMPTY_RESPONSE_CODE,
   LlmAdapter,
   LlmError,
@@ -23,7 +22,6 @@ const {
   assertUsableApiKey,
   attributionHeaders,
   contentHasImage,
-  isContextWindowExceededError,
   isQuotaExceededError,
   resolveRetryPolicy,
   ToolCallId,
@@ -591,10 +589,9 @@ function httpErrorCode(status: number, error: WireError | undefined) {
   const detail = [error?.code, error?.type, error?.message].filter(Boolean).join(" ");
   if (isQuotaExceededError(detail)) return QUOTA_EXCEEDED_CODE;
   if (status === 429) return "RATE_LIMIT";
-  if (status === 400) {
-    if (isContextWindowExceededError(detail)) return CONTEXT_WINDOW_EXCEEDED_CODE;
-    return "INVALID_REQUEST";
-  }
+  // 400 一律按 INVALID_REQUEST 处理：保留 NIM 返回的 code + message 透传给上层，
+  // 由请求方展示真实错误，而不是被错判为上下文超限并触发强制压缩。
+  if (status === 400) return "INVALID_REQUEST";
   if (status >= 500) return "SERVER";
   return `HTTP_${status}`;
 }
